@@ -6256,39 +6256,54 @@ impl<'a> Lower<'a> {
                 float(self, r)
             }
             "v_fmac_f32" | "v_mac_f32" | "v_mac_legacy_f32" => {
-                let (a, bb) = (f(self, 0)?, f(self, 1)?);
+                let flush = name != "v_fmac_f32";
+                let (mut a, mut bb) = (f(self, 0)?, f(self, 1)?);
+                if flush {
+                    a = self.ftz(a);
+                    bb = self.ftz(bb);
+                }
                 let Some(Operand::Vector { reg, .. }) = v.dst else {
                     return Err("an accumulator");
                 };
                 let acc = inst.read(Reg::V(reg)).ok_or("an accumulator")?;
-                let acc = match self.floats.get(&acc) {
+                let mut acc = match self.floats.get(&acc) {
                     Some(&x) => x,
                     None => {
                         let x = self.i32_of(acc)?;
                         self.as_float(x)
                     }
                 };
+                if flush {
+                    acc = self.ftz(acc);
+                }
                 let r = match name {
                     "v_fmac_f32" => self.fmad(a, bb, acc),
                     "v_mac_f32" => {
                         let m = self.s.m.bin(c, Bin::Mul, a, bb);
-                        self.s.m.bin(c, Bin::Add, m, acc)
+                        let m = self.ftz(m);
+                        let r = self.s.m.bin(c, Bin::Add, m, acc);
+                        self.ftz(r)
                     }
                     _ => {
                         let m = self.legacy_mul(a, bb);
-                        self.s.m.bin(c, Bin::Add, m, acc)
+                        let m = self.ftz(m);
+                        let r = self.s.m.bin(c, Bin::Add, m, acc);
+                        self.ftz(r)
                     }
                 };
                 float(self, r)
             }
             "v_mad_f32" | "v_madak_f32" | "v_madmk_f32" | "v_mad_legacy_f32" => {
                 let (a, bb, cc) = (f(self, 0)?, f(self, 1)?, f(self, 2)?);
+                let (a, bb, cc) = (self.ftz(a), self.ftz(bb), self.ftz(cc));
                 let m = if name == "v_mad_legacy_f32" {
                     self.legacy_mul(a, bb)
                 } else {
                     self.s.m.bin(c, Bin::Mul, a, bb)
                 };
+                let m = self.ftz(m);
                 let r = self.s.m.bin(c, Bin::Add, m, cc);
+                let r = self.ftz(r);
                 float(self, r)
             }
             "v_max3_f32" | "v_min3_f32" | "v_med3_f32" => {

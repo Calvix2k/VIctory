@@ -2281,3 +2281,101 @@ fn v_mul_legacy_f32_treats_denormals_as_zero() {
         );
     });
 }
+fn v_mad_f32_flushes_subnormals_around_omod() {
+    // 1.5 * FLT_MIN * 1.0 - FLT_MIN is a positive subnormal. RDNA flushes
+    // it before mul:2, so it stays +0 instead of becoming FLT_MIN.
+    let [w0, mut w1] = vop3(0x141, 0, vgpr(1), vgpr(2), vgpr(3));
+    w1 |= 1 << 27; // OMOD = multiply by two.
+    let before_omod = build_valu_cs(&[w0, w1]);
+    let before_cases = [[0x00c0_0000, 0x3f80_0000, 0x8080_0000, 0]];
+    // A subnormal product is flushed before the normal accumulator is added.
+    let product_cases = [[0x0080_0000, 0x3f00_0000, 0x0080_0000, 0]];
+    // A subnormal input is flushed before arithmetic; without that, it nudges
+    // FLT_MIN to the next representable f32 before mul:2.
+    let input_cases = [[0x0000_0001, 0x3f80_0000, 0x0080_0000, 0]];
+    // OMOD=div:2 turns FLT_MIN into a subnormal, which the result flush clears.
+    let [out_w0, mut out_w1] = vop3(0x141, 0, vgpr(1), vgpr(2), vgpr(3));
+    out_w1 |= 3 << 27;
+    let after_omod = build_valu_cs(&[out_w0, out_w1]);
+    let after_cases = [[0x0080_0000, 0x3f80_0000, 0, 0]];
+
+    if Host::new(false).is_err() && Host::new(true).is_err() {
+        eprintln!("no SM 6.6 host or WARP device; skipped");
+        return;
+    }
+
+    run_cases(&before_omod, &before_cases, |backend, _, _, got| {
+        assert_eq!(got, 0, "{backend}: MAD flushes subnormal sum before OMOD");
+    });
+    run_cases(&before_omod, &product_cases, |backend, _, _, got| {
+        assert_eq!(got, 0x0100_0000, "{backend}: MAD flushes subnormal product");
+    });
+    run_cases(&before_omod, &input_cases, |backend, _, _, got| {
+        assert_eq!(got, 0x0100_0000, "{backend}: MAD flushes subnormal input");
+    });
+    run_cases(&after_omod, &after_cases, |backend, _, _, got| {
+        assert_eq!(got, 0, "{backend}: MAD flushes subnormal after OMOD");
+    });
+}
+
+/// The LLVM text `dxc -dumpbin` prints for a DXIL container, when dxc is
+/// installed.
+#[cfg(windows)]
+fn dump_dxil(container: &[u8]) -> Option<String> {
+    let dxc = match std::env::var_os("VICTORY_PC_DXC") {
+        Some(p) => std::path::PathBuf::from(p),
+        None => super::validator::Validator::default_path()?.with_file_name("dxc.exe"),
+    };
+    if !dxc.exists() {
+        return None;
+    }
+    let file = std::env::temp_dir().join(format!("victory-valu-{}.dxil", std::process::id()));
+    std::fs::write(&file, container).ok()?;
+    let out = std::process::Command::new(dxc)
+        .arg("-dumpbin")
+        .arg(&file)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&file);
+    assert!(
+        out.status.success(),
+        "dxc -dumpbin failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(windows)]
+#[test]
+fn v_mad_f32_flushes_subnormals_in_dxil() {
+    // No GPU: the flush must be visible in the DXIL the lowering emits.
+    let [mad0, mad1] = vop3(0x141, 0, vgpr(1), vgpr(2), vgpr(3));
+    let [fmac0, fmac1] = vop3(0x02b, 0, vgpr(1), vgpr(2), vgpr(3));
+    let (Some(mad), Some(fmac)) = (
+        dump_dxil(&build_valu_cs(&[mad0, mad1]).dxil),
+        dump_dxil(&build_valu_cs(&[fmac0, fmac1]).dxil),
+    ) else {
+        eprintln!("no dxc.exe; DXIL check skipped");
+        return;
+    };
+    let count = |text: &str, op: &str| text.lines().filter(|line| line.contains(op)).count();
+    let flushes = |text: &str| {
+        text.lines()
+            .filter(|line| line.contains("and i32") && line.contains("2139095040"))
+            .count()
+    };
+    assert!(
+        flushes(&mad) >= 5,
+        "MAD flushes each input, the product and the sum"
+    );
+    assert_eq!(
+        count(&mad, "-2147483648"),
+        flushes(&mad),
+        "every flush keeps the sign"
+    );
+    assert!(
+        count(&mad, "select i1") >= flushes(&mad),
+        "every flush selects the signed zero"
+    );
+    assert_eq!(flushes(&fmac), 0, "the fused MAC keeps subnormals");
+}
