@@ -142,6 +142,16 @@ impl Shader {
             })
             .as_ref()
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_translation(host: victory_shader::emit::HostShader) -> Arc<Self> {
+        let mut shader = Self::new("compute", &host.dxil);
+        shader.translated = OnceLock::from(Some(Translated {
+            host,
+            used: Vec::new(),
+        }));
+        Arc::new(shader)
+    }
 }
 
 /// This thread's processor time so far, user and kernel, in 100 ns units.
