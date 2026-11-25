@@ -2249,9 +2249,8 @@ fn relative_moves_reach_only_what_their_clamped_index_can() {
     );
 }
 
-/// `v_mad_legacy_f32` as RDNA 2 runs it: fused (the legacy encoding is
-/// `v_fma_legacy_f32` there), with flushed sources and the legacy zero-factor
-/// rule.
+/// `v_fma_legacy_f32` (VOP3 0x140) as RDNA 2 runs it: fused, with flushed
+/// sources and the legacy zero-factor rule.
 #[test]
 fn v_mul_legacy_f32_treats_denormals_as_zero() {
     // v_mul_legacy_f32 v0, v1, v2 (VOP2 opcode 0x007 in its VOP3 encoding)
@@ -2290,7 +2289,7 @@ fn v_mad_f32_flushes_subnormals_around_omod() {
     let [w0, mut w1] = vop3(0x141, 0, vgpr(1), vgpr(2), vgpr(3));
     w1 |= 1 << 27; // OMOD = multiply by two.
     let before_omod = build_valu_cs(&[w0, w1]);
-    let before_cases = [[0x00c0_0000, 0x3f80_0000, 0x8080_0000, 0]];
+    let before_cases: [[u32; 4]; 1] = [[0x00c0_0000, 0x3f80_0000, 0x8080_0000, 0]];
     // A subnormal product is flushed before the normal accumulator is added.
     let product_cases = [[0x0080_0000, 0x3f00_0000, 0x0080_0000, 0]];
     // A subnormal input is flushed before arithmetic; without that, it nudges
@@ -2319,11 +2318,13 @@ fn legacy_mad_fuses_its_product_and_flushes_its_sources() {
         eprintln!("no SM 6.6 host or WARP device; skipped");
         return;
     }
+    // A device whose `tertiary` rounds the product before the add (Xe-LP does
+    // here although the old probe passed) cannot be the reference for the
+    // fused form: skip the case there as on WARP.
+    let fuses = Host::new(false).ok().and_then(|h| h.fuses_fmad().ok());
     run_cases(&mad, &cases, |backend, i, _, got| {
-        if backend == "warp" && i == 0 {
-            // WARP rounds the product before the add; the hardware's one
-            // rounding is the reference for the fused form.
-            eprintln!("{backend}: fused rounding differs on WARP; skipped");
+        if i == 0 && (backend == "warp" || fuses == Some(false)) {
+            eprintln!("{backend}: the device rounds the product before the add; skipped");
             return;
         }
         assert_eq!(got, want[i], "{backend}: case {i}");

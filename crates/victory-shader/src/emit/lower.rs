@@ -6270,7 +6270,7 @@ impl<'a> Lower<'a> {
                 let r = self.fmad(a, bb, cc);
                 float(self, r)
             }
-            "v_fmac_f32" | "v_mac_f32" | "v_mac_legacy_f32" => {
+            "v_fmac_f32" | "v_mac_f32" | "v_fmac_legacy_f32" => {
                 let (a, bb) = (f(self, 0)?, f(self, 1)?);
                 let Some(Operand::Vector { reg, .. }) = v.dst else {
                     return Err("an accumulator");
@@ -6289,10 +6289,11 @@ impl<'a> Lower<'a> {
                         let m = self.s.m.bin(c, Bin::Mul, a, bb);
                         self.s.m.bin(c, Bin::Add, m, acc)
                     }
-                    // On RDNA 2 the legacy encoding decodes as fused
-                    // (`v_fma_legacy_f32`, AnyPS5's shader-debt page) and
-                    // flushes its sources; the zero-factor rule of the legacy
-                    // multiply comes with it.
+                    // On RDNA 2 the legacy encodings are the fused forms
+                    // (`V_FMA_LEGACY_F32` VOP3 0x140, `V_FMAC_LEGACY_F32`
+                    // VOP2 0x06; LLVM's AMDGPU GFX10.3 opcode tables) and
+                    // flush their sources; the zero-factor rule of the legacy
+                    // multiply comes with them.
                     _ => {
                         let (a, bb, acc) = (self.ftz(a), self.ftz(bb), self.ftz(acc));
                         self.legacy_fmad(a, bb, acc)
@@ -6306,7 +6307,7 @@ impl<'a> Lower<'a> {
                 let r = self.s.m.bin(c, Bin::Add, m, cc);
                 float(self, r)
             }
-            "v_mad_legacy_f32" => {
+            "v_fma_legacy_f32" => {
                 let (a, bb, cc) = (f(self, 0)?, f(self, 1)?, f(self, 2)?);
                 let (a, bb, cc) = (self.ftz(a), self.ftz(bb), self.ftz(cc));
                 let r = self.legacy_fmad(a, bb, cc);
