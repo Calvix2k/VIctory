@@ -8721,10 +8721,12 @@ impl<'a> Lower<'a> {
             }
             let sh = self.handle(site, ss, true, (14 | if cmp { 0x8000 } else { 0 }, 0))?;
             // Texel offsets (`_o`) come first: x in bits 0-5, y in 8-13,
-            // signed (programmable offsets: gathers only).
+            // signed (programmable offsets: gathers only). The words before
+            // the coordinates are the offset, bias and compare value, each a
+            // whole VGPR (the `extra` count the packed address path splits
+            // on); counting them by name missed the offset form's bias.
             let offset_word = name.ends_with("_o");
-            let first =
-                usize::from(offset_word) + usize::from(name == "image_sample_b") + usize::from(cmp);
+            let first = extra;
             // Coordinates the size divides (not the array slice); explicit
             // gradients (x then y) come before the coordinates.
             let spatial = coords - usize::from(kind == 6 || kind == 7);
