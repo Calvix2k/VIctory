@@ -2043,6 +2043,83 @@ void main(uint3 id : SV_DispatchThreadID) {
         }
     }
 
+    #[test]
+    fn a_dispatch_reads_the_fifth_root_constant() {
+        let Some(host) = crate::host::host() else {
+            return; // no host GPU here
+        };
+        use crate::pipeline::{Shader, host::Stage};
+        use victory_shader::emit::{HostShader, UserData};
+        let (root, pso) = compile_cs(r#"
+#define RS "RootConstants(num32BitConstants=8, b0), UAV(u0)"
+cbuffer C : register(b0) { uint4 first; uint fifth; }
+RWByteAddressBuffer out_buf : register(u0);
+[RootSignature(RS)]
+[numthreads(1, 1, 1)]
+void main() { out_buf.Store(0, fifth); }
+"#);
+        // Only the fifth title constant is read. Give the binding code
+        // the user-data layout a translation of that shader would carry.
+        let shader = Shader::from_test_translation(HostShader {
+            stage: victory_shader::HwStage::Cs,
+            dxil: Vec::new(),
+            user_data: vec![UserData { index: 4, slot: 0, root: RootType::Constants, dword: 4 }],
+            samplers: Vec::new(),
+            static_samplers: Vec::new(),
+            root_cbvs: Vec::new(),
+            root_srvs: Vec::new(),
+            root_uavs: Vec::new(),
+            memory: false,
+            memory_writes: false,
+            view_addresses: false,
+            heap: false,
+            heap_writes: false,
+            view_marks: false,
+        });
+        let pipeline = HostPipeline {
+            compute: true,
+            mesh: false,
+            pso,
+            root,
+            stages: vec![Stage {
+                shader,
+                user_data: Some((0, 8)),
+                root_cbvs: Vec::new(),
+                root_srvs: Vec::new(),
+                root_uavs: Vec::new(),
+                memory: None,
+                memory_dirty: None,
+                view_addresses: None,
+            }],
+            rectangles: false,
+            slots: 0,
+            inputs: Vec::new(),
+            name: "fifth root constant".into(),
+            marks: None,
+        };
+        let (out, data) = host.shared_buffer(4).unwrap();
+        let list = host.new_list().unwrap();
+        let mut state = State::default();
+        let expected = 0x1234_abcd;
+        state.set_constants(true, 0, &[1, 2, 3, 4, expected], 0);
+        // SAFETY: the mapped output belongs to this test and no GPU work
+        // has been submitted. A dropped dispatch leaves it zero.
+        unsafe { data.cast::<u32>().write(0) };
+        if state.bind(&list, &pipeline, true) {
+            // SAFETY: the open list has the pipeline and constants set.
+            // The caller owns the live output until execution ends.
+            unsafe {
+                list.list.SetComputeRootUnorderedAccessView(1, out.GetGPUVirtualAddress());
+                list.list.Dispatch(1, 1, 1);
+            }
+        }
+        list.close();
+        host.execute(&[&list]);
+        // SAFETY: the dispatch has completed and the output is still mapped.
+        let value = unsafe { data.cast::<u32>().read() };
+        assert_eq!(value, expected);
+    }
+
     /// Which pixels of a 64x64 host D32S8 `texture` (title texture `depth`)
     /// pass an EQUAL depth test against a square (two triangles, as the
     /// title's rectangles become) drawn over pixel `k - 1` (row by row) with
