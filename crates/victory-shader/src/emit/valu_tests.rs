@@ -1911,7 +1911,7 @@ fn image_addresses_of_16_bits_and_clamps() {
 /// Comparison gathers of a 4x4 texture, with and without a texel offset:
 /// `textureGatherCmp` returns, per texel of the gather's footprint and in its
 /// order, whether the reference passes the sampler's comparison. Coordinates
-/// (0.375, 0.625): texels (1,3), (2,3), (2,2), (1,2) with the channel in red
+/// (0.4, 0.7), away from a texel tie: texels (1,3), (2,3), (2,2), (1,2) in red
 /// (4y + x); with the offset (1, 0): (2,3), (3,3), (3,2), (2,2).
 #[test]
 fn comparison_gathers_return_their_four_comparisons() {
@@ -1937,7 +1937,7 @@ fn comparison_gathers_return_their_four_comparisons() {
             w.push(vop1(0x001, 1, 128)); // v_mov_b32 v1, 0: no texel offset
         }
         let first = if offset { 2 } else { 1 };
-        for (reg, value) in [(first, reference), (first + 1, 0.375), (first + 2, 0.625)] {
+        for (reg, value) in [(first, reference), (first + 1, 0.4), (first + 2, 0.7)] {
             w.extend([vop1(0x001, reg, 255), value.to_bits()]);
         }
         let op = if offset { 0x05f } else { 0x04f };
