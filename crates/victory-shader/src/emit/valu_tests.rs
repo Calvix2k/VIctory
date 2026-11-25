@@ -1908,6 +1908,114 @@ fn image_addresses_of_16_bits_and_clamps() {
     }
 }
 
+/// Comparison gathers of a 4x4 texture, with and without a texel offset:
+/// `textureGatherCmp` returns, per texel of the gather's footprint and in its
+/// order, whether the reference passes the sampler's comparison. Coordinates
+/// (0.375, 0.625): texels (1,3), (2,3), (2,2), (1,2) with the channel in red
+/// (4y + x); with the offset (1, 0): (2,3), (3,3), (3,2), (2,2).
+#[test]
+fn comparison_gathers_return_their_four_comparisons() {
+    use windows::Win32::Graphics::Direct3D12::*;
+    // Descriptors: s[8:15] the 4x4 texture (heap 0), s[16:19] the sampler (0),
+    // s[20:23] the raw UAV (1).
+    let mut prefix = vec![s_mov_b32(5, 0x80), s_mov_b32(7, 0x80)];
+    for (op, dst, base, offset) in [(3u32, 8u32, 4u32, 0u32), (2, 16, 6, 0), (2, 20, 4, 0x20)] {
+        prefix.extend([
+            0x3D << 26 | op << 18 | dst << 6 | base >> 1,
+            125 << 25 | offset,
+        ]);
+    }
+    let used = [
+        (4, ResourceType::Srv, 0, 8),
+        (4, ResourceType::Uav, 8, 4),
+        (6, ResourceType::Sampler, 0, 4),
+    ];
+    let program = |offset: bool, reference: f32| {
+        let mut w = prefix.clone();
+        // The address dwords: offset (only `_o`), reference, x, y.
+        if offset {
+            w.push(vop1(0x001, 1, 128)); // v_mov_b32 v1, 0: no texel offset
+        }
+        let first = if offset { 2 } else { 1 };
+        for (reg, value) in [(first, reference), (first + 1, 0.375), (first + 2, 0.625)] {
+            w.extend([vop1(0x001, reg, 255), value.to_bits()]);
+        }
+        let op = if offset { 0x05f } else { 0x04f };
+        w.extend_from_slice(&mimg_sample(op, 0x1, 1, 13, 1, 8, 16));
+        for k in 0..4u8 {
+            w.extend(buffer_store_dword(13 + k, 20, 4 * u16::from(k)));
+        }
+        w.push(S_ENDPGM);
+        lower_cs32(&w, &used, true)
+    };
+    let samplers = [D3D12_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        ComparisonFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+        MaxAnisotropy: 1,
+        MaxLOD: f32::MAX,
+        ..Default::default()
+    }];
+    let texels: Vec<[f32; 4]> = (0..16).map(|i| [i as f32, 0.0, 0.0, 1.0]).collect();
+    let views = [View::Texture(4, 4, &texels), View::RawUav(4)];
+    let reference = 13.5f32;
+    let want = |at: [(i32, i32); 4]| -> Vec<f32> {
+        at.iter()
+            .map(|&(x, y)| {
+                let texel = if (0..4).contains(&x) && (0..4).contains(&y) {
+                    (4 * y + x) as f32
+                } else {
+                    0.0
+                };
+                f32::from(u8::from(reference <= texel))
+            })
+            .collect()
+    };
+    let cases = [
+        (
+            program(false, reference),
+            want([(1, 3), (2, 3), (2, 2), (1, 2)]),
+        ),
+        (
+            program(true, reference),
+            want([(2, 3), (3, 3), (3, 2), (2, 2)]),
+        ),
+    ];
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ran = 0;
+    for (label, warp) in [("hardware", false), ("warp", true)] {
+        let Ok(host) = Host::new(warp) else {
+            eprintln!("no SM 6.6 {label} device; skipped");
+            continue;
+        };
+        for (shader, want) in &cases {
+            let (root, pso) = host
+                .compute_pipeline(shader)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            let out = host
+                .dispatch(
+                    &root,
+                    &pso,
+                    &Dispatch {
+                        roots: vec![(0, Root::Constants(user_data_cs32(shader, 0)))],
+                        views: &views,
+                        samplers: &samplers,
+                        groups: [1, 1, 1],
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            let got: Vec<f32> = out[0].iter().map(|&x| f32::from_bits(x)).collect();
+            assert_eq!(&got, want, "{label}");
+        }
+        ran += 1;
+    }
+    if ran == 0 {
+        eprintln!("no device ran the comparison gathers (no SM 6.6 device); skipped");
+    }
+}
+
 /// MIMG `image_atomic_<op> vdata, v[vaddr:vaddr+1], s[srsrc:srsrc+7]
 /// dmask dim:2D unorm` (glc returns the old value).
 const fn image_atomic(op: u32, vdata: u8, vaddr: u8, srsrc: u8, dmask: u32, glc: bool) -> [u32; 2] {
