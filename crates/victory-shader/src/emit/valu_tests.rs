@@ -2315,6 +2315,12 @@ const fn mimg_sample(
 /// A 1-thread compute shader with a Texture2D SRV at table 0, a raw UAV at
 /// index 1 and a sampler at table 0. `body` leaves four dwords in v8..v11.
 fn build_sample_cs(body: &[u32]) -> HostShader {
+    sample_cs(body).unwrap_or_else(|e| panic!("translate: {e}"))
+}
+
+/// The same as [`build_sample_cs`], refusing a program the translator
+/// refuses instead of panicking.
+fn sample_cs(body: &[u32]) -> Result<HostShader, String> {
     let mut words = Vec::new();
     words.push(s_mov_b32(5, 0x80));
     words.push(s_mov_b32(7, 0x80));
@@ -2416,7 +2422,7 @@ fn build_sample_cs(body: &[u32]) -> HostShader {
         mesh_stride: 0,
         view_marks: false,
     })
-    .expect("lower");
+    .map_err(|e| e.to_string())?;
 
     let shader = HostShader {
         stage: HwStage::Cs,
@@ -2441,7 +2447,7 @@ fn build_sample_cs(body: &[u32]) -> HostShader {
         v.validate(&mut copy).expect("DXIL validation failed");
         assert_eq!(copy[4..20], ours[..], "container hash mismatch");
     }
-    shader
+    Ok(shader)
 }
 
 #[test]
@@ -2473,5 +2479,29 @@ fn comparison_gathers_and_offset_samples_lower_and_validate() {
     for (op, name) in samples {
         let shader = build_sample_cs(&body(op));
         assert!(!shader.dxil.is_empty(), "{name} lowered");
+    }
+}
+
+#[test]
+fn gathers_of_a_1d_3d_or_offset_cube_image_are_refused() {
+    // DXIL gathers are 2D, 2D array and cube only, and a cube gather takes no
+    // texel offset: the validator rejects those modules, so the translator
+    // refuses them rather than emitting one.
+    let body = |op: u16, dim: u8| {
+        let mut words = Vec::new();
+        for reg in 1..=4u8 {
+            words.push(vop1(0x001, reg, 0x80));
+        }
+        words.extend_from_slice(&mimg_sample(op, 0x1, dim, 8, 1, 16, 12));
+        words
+    };
+    for (op, dim, what) in [
+        (0x04f, 0, "1D"),
+        (0x04f, 4, "1D array"),
+        (0x04f, 2, "3D"),
+        (0x05f, 3, "cube with an offset"),
+    ] {
+        let err = sample_cs(&body(op, dim)).expect_err(what);
+        assert!(err.contains("gather"), "{what}: {err}");
     }
 }

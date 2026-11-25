@@ -8963,6 +8963,16 @@ impl<'a> Lower<'a> {
                     )
                 }
                 _ => {
+                    // DXIL gathers exist for 2D, 2D array and cube only; a
+                    // console 1D, 1D array or 3D gather would declare one of
+                    // those resources and be rejected by the validator.
+                    if !matches!(kind, 2 | 5 | 7) {
+                        return Err("a gather of a 1D or 3D image");
+                    }
+                    // A cube gather takes no texel offset: DXIL wants it undef.
+                    if kind == 5 && offset_word {
+                        return Err("a cube gather with texel offsets");
+                    }
                     if name == "image_gather4" {
                         return Err("a gather with implicit level");
                     }
