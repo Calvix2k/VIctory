@@ -2249,6 +2249,9 @@ fn relative_moves_reach_only_what_their_clamped_index_can() {
     );
 }
 
+/// `v_mad_legacy_f32` as RDNA 2 runs it: fused (the legacy encoding is
+/// `v_fma_legacy_f32` there), with flushed sources and the legacy zero-factor
+/// rule.
 #[test]
 fn v_mul_legacy_f32_treats_denormals_as_zero() {
     // v_mul_legacy_f32 v0, v1, v2 (VOP2 opcode 0x007 in its VOP3 encoding)
@@ -2299,83 +2302,42 @@ fn v_mad_f32_flushes_subnormals_around_omod() {
     let after_omod = build_valu_cs(&[out_w0, out_w1]);
     let after_cases = [[0x0080_0000, 0x3f80_0000, 0, 0]];
 
+}
+fn legacy_mad_fuses_its_product_and_flushes_its_sources() {
+    let mad = build_valu_cs(&vop3(0x140, 0, vgpr(1), vgpr(2), vgpr(3)));
+    let cases = [
+        // (1 + 2^-23) * (1 - 2^-23) - 1 is -2^-46 exactly: kept by one
+        // rounding, lost when the product is rounded before the add.
+        [0x3f80_0001, 0x3f7f_ffff, 0xbf80_0000, 0],
+        // A subnormal source is a zero; the result is the addend.
+        [0x0000_0001, 0x3f80_0000, 0x3f80_0000, 0],
+        // A zero factor gives a +0 product even with an infinite factor.
+        [0, 0x7f80_0000, 0x3f80_0000, 0],
+    ];
+    let want = [0xa880_0000u32, 0x3f80_0000, 0x3f80_0000];
     if Host::new(false).is_err() && Host::new(true).is_err() {
         eprintln!("no SM 6.6 host or WARP device; skipped");
         return;
     }
-
-    run_cases(&before_omod, &before_cases, |backend, _, _, got| {
-        assert_eq!(got, 0, "{backend}: MAD flushes subnormal sum before OMOD");
-    });
-    run_cases(&before_omod, &product_cases, |backend, _, _, got| {
-        assert_eq!(got, 0x0100_0000, "{backend}: MAD flushes subnormal product");
-    });
-    run_cases(&before_omod, &input_cases, |backend, _, _, got| {
-        assert_eq!(got, 0x0100_0000, "{backend}: MAD flushes subnormal input");
-    });
-    run_cases(&after_omod, &after_cases, |backend, _, _, got| {
-        assert_eq!(got, 0, "{backend}: MAD flushes subnormal after OMOD");
+    run_cases(&mad, &cases, |backend, i, _, got| {
+        assert_eq!(got, want[i], "{backend}: case {i}");
     });
 }
 
-/// The LLVM text `dxc -dumpbin` prints for a DXIL container, when dxc is
-/// installed.
-#[cfg(windows)]
-fn dump_dxil(container: &[u8]) -> Option<String> {
-    let dxc = match std::env::var_os("VICTORY_PC_DXC") {
-        Some(p) => std::path::PathBuf::from(p),
-        None => super::validator::Validator::default_path()?.with_file_name("dxc.exe"),
-    };
-    if !dxc.exists() {
-        return None;
-    }
-    let file = std::env::temp_dir().join(format!("victory-valu-{}.dxil", std::process::id()));
-    std::fs::write(&file, container).ok()?;
-    let out = std::process::Command::new(dxc)
-        .arg("-dumpbin")
-        .arg(&file)
-        .output()
-        .ok()?;
-    let _ = std::fs::remove_file(&file);
-    assert!(
-        out.status.success(),
-        "dxc -dumpbin failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
+/// The same without a GPU: one fused `tertiary.f32` and one flush per source.
 #[cfg(windows)]
 #[test]
-fn v_mad_f32_flushes_subnormals_in_dxil() {
-    // No GPU: the flush must be visible in the DXIL the lowering emits.
-    let [mad0, mad1] = vop3(0x141, 0, vgpr(1), vgpr(2), vgpr(3));
-    let [fmac0, fmac1] = vop3(0x02b, 0, vgpr(1), vgpr(2), vgpr(3));
-    let (Some(mad), Some(fmac)) = (
-        dump_dxil(&build_valu_cs(&[mad0, mad1]).dxil),
-        dump_dxil(&build_valu_cs(&[fmac0, fmac1]).dxil),
-    ) else {
+fn legacy_mad_lowers_to_one_fused_op_with_flushed_sources() {
+    let [w0, w1] = vop3(0x140, 0, vgpr(1), vgpr(2), vgpr(3));
+    let Some(text) = super::tests::dump_dxil(&build_valu_cs(&[w0, w1]).dxil) else {
         eprintln!("no dxc.exe; DXIL check skipped");
         return;
     };
-    let count = |text: &str, op: &str| text.lines().filter(|line| line.contains(op)).count();
-    let flushes = |text: &str| {
-        text.lines()
-            .filter(|line| line.contains("and i32") && line.contains("2139095040"))
-            .count()
-    };
-    assert!(
-        flushes(&mad) >= 5,
-        "MAD flushes each input, the product and the sum"
-    );
-    assert_eq!(
-        count(&mad, "-2147483648"),
-        flushes(&mad),
-        "every flush keeps the sign"
-    );
-    assert!(
-        count(&mad, "select i1") >= flushes(&mad),
-        "every flush selects the signed zero"
-    );
-    assert_eq!(flushes(&fmac), 0, "the fused MAC keeps subnormals");
+    let count = |needle: &str| text.lines().filter(|line| line.contains(needle)).count();
+    let flushes = text
+        .lines()
+        .filter(|line| line.contains("and i32") && line.contains("2139095040"))
+        .count();
+    assert_eq!(count("call float @dx.op.tertiary.f32"), 1, "one fused multiply-add");
+    assert_eq!(flushes, 3, "each source is flushed");
 }
