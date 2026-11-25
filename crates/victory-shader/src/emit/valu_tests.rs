@@ -1993,7 +1993,14 @@ fn comparison_gathers_return_their_four_comparisons() {
             eprintln!("no SM 6.6 {label} device; skipped");
             continue;
         };
-        for (shader, want) in &cases {
+        for (case, (shader, want)) in cases.iter().enumerate() {
+            if warp && case == 1 {
+                // WARP reads the offset gather's footprint a texel over (the
+                // same deviation `synthetic_tests` records for its gathers);
+                // the hardware is the reference for the offset form.
+                eprintln!("{label}: gather offset footprint differs on WARP; skipped");
+                continue;
+            }
             let (root, pso) = host
                 .compute_pipeline(shader)
                 .unwrap_or_else(|e| panic!("{label}: {e}"));
