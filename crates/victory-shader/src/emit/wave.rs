@@ -323,6 +323,8 @@ fn simulate(insts: &[Inst], wave: u32, saved: Value) -> HashMap<Value, Shape> {
     let mut uni: HashMap<Value, Sym> = HashMap::new();
     // Masks the section derives from the saved EXEC (`s_and` with it).
     let mut masked = vec![saved];
+    // Scalars the section set to a constant, which `EXEC` may be set from.
+    let mut sconst: HashMap<Value, u64> = HashMap::new();
     for inst in insts {
         let name = inst.name();
         if inst.write(Reg::S(EXEC)).is_some() {
@@ -330,7 +332,7 @@ fn simulate(insts: &[Inst], wave: u32, saved: Value) -> HashMap<Value, Shape> {
             // the simulation can follow.
             let lo = name
                 .starts_with("s_mov_b")
-                .then(|| constant(inst))
+                .then(|| constant(inst, &sconst))
                 .flatten();
             let Some(k) = lo else {
                 return shapes(vec, uni, wave);
@@ -345,7 +347,7 @@ fn simulate(insts: &[Inst], wave: u32, saved: Value) -> HashMap<Value, Shape> {
         if inst.write(Reg::S(EXEC + 1)).is_some() {
             let Some(k) = name
                 .starts_with("s_mov_b")
-                .then(|| constant(inst))
+                .then(|| constant(inst, &sconst))
                 .flatten()
             else {
                 return shapes(vec, uni, wave);
@@ -361,6 +363,21 @@ fn simulate(insts: &[Inst], wave: u32, saved: Value) -> HashMap<Value, Shape> {
                 masked.push(w);
             }
             for &(_, w) in &inst.writes {
+                // A copy of a constant keeps it (an `s_mov_b*` from an
+                // inline constant or from a scalar the section itself set
+                // to one); anything else drops what the scalar held.
+                let known = name
+                    .starts_with("s_mov_b")
+                    .then(|| constant(inst, &sconst))
+                    .flatten();
+                match known {
+                    Some(k) => {
+                        sconst.insert(w, k);
+                    }
+                    None => {
+                        sconst.remove(&w);
+                    }
+                }
                 uni.entry(w).or_insert(Sym::Unknown);
             }
             continue;
@@ -585,12 +602,16 @@ fn simulate(insts: &[Inst], wave: u32, saved: Value) -> HashMap<Value, Shape> {
     shapes(vec, uni, wave)
 }
 
-fn constant(inst: &Inst) -> Option<u64> {
+fn constant(inst: &Inst, sconst: &HashMap<Value, u64>) -> Option<u64> {
     let Fields::Sop { src, .. } = &inst.fields else {
         return None;
     };
     let wide = inst.name() == "s_mov_b64";
     match *src.first()? {
+        // A scalar the section itself set to a constant carries it on.
+        Operand::Scalar { code, .. } if code != NULL => {
+            inst.read(Reg::S(code)).and_then(|v| sconst.get(&v).copied())
+        }
         Operand::Scalar { code: NULL, .. } => Some(0),
         Operand::Const(c @ 128..=208) => {
             let x = crate::resource::inline(c)?;
@@ -841,7 +862,7 @@ mod tests {
         let b32 = 0x03;
         let check = |words: &[u32], wave64: bool| -> Option<u64> {
             let p = build(words, wave64);
-            constant(&p.blocks[0].insts[0])
+            constant(&p.blocks[0].insts[0], &HashMap::new())
         };
 
         assert_eq!(
@@ -1089,5 +1110,23 @@ mod tests {
             let (shape, _, _) = run(c);
             assert_eq!(shape, None, "inline float const {c} was treated as identity");
         }
+    }
+    /// `EXEC` set from a scalar the section itself set to a constant: the
+    /// simulation follows it instead of stopping there, which is what a
+    /// section that masks itself with a computed all-ones needs.
+    #[test]
+    fn a_section_follows_exec_set_from_a_scalar_constant() {
+        let w = [
+            sop1(0, 0x3D, 193),  // s_or_saveexec_b32 s0, -1 (every lane)
+            sop1(5, 0x03, 193),  // s_mov_b32 s5, -1
+            sop1(EXEC, 0x03, 5), // s_mov_b32 exec_lo, s5
+            vop1(2, 0x01, 135),  // v_mov_b32 v2, 7
+            sop1(EXEC, 0x03, 0), // s_mov_b32 exec_lo, s0 (the section ends)
+        ];
+        let p = build(&w, false);
+        let insts = &p.blocks[0].insts;
+        let v2_val = insts[3].write(Reg::V(2)).unwrap();
+        let sec = &sections(&p, 0)[&0];
+        assert_eq!(sec.shapes.get(&v2_val), Some(&Shape::K(7)));
     }
 }
