@@ -2308,7 +2308,7 @@ fn legacy_mad_fuses_its_product_and_flushes_its_sources() {
     let cases = [
         // (1 + 2^-23) * (1 - 2^-23) - 1 is -2^-46 exactly: kept by one
         // rounding, lost when the product is rounded before the add.
-        [0x3f80_0001, 0x3f7f_ffff, 0xbf80_0000, 0],
+        [0x3f80_0001, 0x3f7f_fffe, 0xbf80_0000, 0],
         // A subnormal source is a zero; the result is the addend.
         [0x0000_0001, 0x3f80_0000, 0x3f80_0000, 0],
         // A zero factor gives a +0 product even with an infinite factor.
