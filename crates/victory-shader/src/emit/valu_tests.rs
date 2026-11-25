@@ -1949,7 +1949,10 @@ fn comparison_gathers_return_their_four_comparisons() {
         lower_cs32(&w, &used, true)
     };
     let samplers = [D3D12_SAMPLER_DESC {
-        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+        // The comparison bit in the filter is what makes the sampler a
+        // comparison sampler; `ComparisonFunc` alone is ignored by WARP (and
+        // by the reference rasterizer), which then gathers zeros.
+        Filter: D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
