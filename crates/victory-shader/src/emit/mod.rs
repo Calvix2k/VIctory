@@ -1630,7 +1630,11 @@ mod tests {
         if !dxc.exists() {
             return None;
         }
-        let file = std::env::temp_dir().join(format!("victory-interp-{}.dxil", std::process::id()));
+        // One name per call: tests run in parallel and share this helper.
+        static DUMPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = DUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = std::env::temp_dir()
+            .join(format!("victory-interp-{}-{n}.dxil", std::process::id()));
         std::fs::write(&file, container).ok()?;
         let out = std::process::Command::new(dxc)
             .arg("-dumpbin")
