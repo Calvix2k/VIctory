@@ -2279,7 +2279,7 @@ fn v_mul_legacy_f32_treats_denormals_as_zero() {
             "{backend}: v_mul_legacy_f32({:#010x}, {:#010x}) = {got:#010x}, want {want:#010x}",
             inp[0], inp[1],
         );
-}
+    });
 }
 /// `v_cvt_f32_f64`: the pair v1:v2 read as binary64, truncated to f32 bits
 /// in v0 with MODE's default round mode (nearest even). The host does the
@@ -2320,5 +2320,17 @@ fn a_64_bit_literal_source_is_the_high_word() {
     let cases = [[0u32, 0, 0, 0]];
     run_cases(&shader, &cases, |backend, i, _in, got| {
         assert_eq!(got, (-2.25f32).to_bits(), "{backend}: case {i}");
+    });
+}
+
+/// An inline float constant source of `v_cvt_f32_f64` is that value as a
+/// binary64 (RDNA 2 ISA 6.2.1): 242 is 1.0, not the f32 bit pattern
+/// 0x000000003F800000 (a subnormal, which converts to 0).
+#[test]
+fn a_64_bit_inline_constant_source_is_the_same_value() {
+    let shader = build_valu_cs(&[vop1(0x00f, 0, 242)]);
+    let cases = [[0u32, 0, 0, 0]];
+    run_cases(&shader, &cases, |backend, i, _in, got| {
+        assert_eq!(got, 1.0f32.to_bits(), "{backend}: case {i}");
     });
 }
