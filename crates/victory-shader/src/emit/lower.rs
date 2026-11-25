@@ -12272,6 +12272,21 @@ mod tests {
             Err(crate::ShaderError::Unsupported { what: "GDS", .. })
         ));
     }
+    #[cfg(windows)]
+    fn validate(dxil: &[u8]) {
+        use super::super::validator::Validator;
+        let Ok(mut v) = Validator::load(Validator::default_path().as_deref()) else {
+            eprintln!("no dxil.dll; skipped");
+            return;
+        };
+        let mut copy = dxil.to_vec();
+        v.validate(&mut copy).unwrap();
+        assert_eq!(copy[4..20], dxil[4..20], "container hash");
+    }
+
+    #[cfg(not(windows))]
+    fn validate(_: &[u8]) {}
+
     #[test]
     fn mad_32_16_and_lerp_u8_lower_and_validate() {
         let vop3 = |op: u32, opsel: u32, vdst: u32, s0: u32, s1: u32, s2: u32| -> [u32; 2] {
@@ -12341,6 +12356,7 @@ mod tests {
             outputs: vec![target],
             prims: vec![],
             mesh_stride: 0,
+            view_marks: false,
         })
         .unwrap();
         validate(&l.dxil);
