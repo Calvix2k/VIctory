@@ -2407,6 +2407,7 @@ fn ps_sample_coverage_input_reads_coverage_mask() {
         view_addresses: false,
         heap: false,
         heap_writes: false,
+        view_marks: false,
     };
 
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
